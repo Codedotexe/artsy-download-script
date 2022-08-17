@@ -1,18 +1,6 @@
 # Download High-Resolution Images from Artsy.com
 
-First, set up the dependencies. This requires a C compiler because of PIL.
+Dowload high resolution artsy images by stiching togeher the tiles from the zoom view of the image.
+This is a fork of [artsy-download-script](https://github.com/dblock/artsy-download-script) updated to python3 and fixed.
 
-```python
-make env
-```
-
-Then, run the download script. When prompted, paste in [any artsy image URL,
-like this
-one](http://artsy.net/artwork/johannes-vermeer-view-of-delft-netherlands-after-the-fire).
-
-```python
-make download
-```
-
-Done!
-
+Simply run it with `python download.py [arsy-url]`

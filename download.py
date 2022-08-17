@@ -1,81 +1,74 @@
 #!/usr/bin/env python
-# coding: utf-8
 from PIL import Image
-from StringIO import StringIO
+from io import BytesIO
+import argparse
 import json
 import re
 import requests
-import sys
 
-artsy_url = raw_input(
-    "Enter the Artsy URL of the painting you'd like to download: ")
+def extractPaintingData(artsyPageUrl):
+	response = requests.get(args.url)
+	if not response.status_code == 200:
+		raise Exception('Bad response from Artsy, cannot get the page you asked for.')
 
+	htmlRaw = response.content.decode()
+	jsonRawMatch = re.search("__RELAY_BOOTSTRAP__\s*=\s*\"(.*)\"", htmlRaw)
+	if not jsonRawMatch:
+		raise Exception("Could not extract json data from the page")
 
-response = requests.get(artsy_url)
-if not response.status_code == 200:
-  raise Exception(
-      'Bad response from Artsy, cannot get the page you asked for.')
+	jsonRaw = jsonRawMatch.group(1).encode().decode("unicode_escape")
+	return json.loads(jsonRaw)[0][1]["json"]["data"]["artwork"]
 
-painting_data_match_groups = re.search(
-    r'\$.parseJSON\(("{.*dztiles.*}")\)\)\);',
-    response.content).groups()
-if not painting_data_match_groups:
-  raise Exception('Could not find any painting data on that page.')
+def assembleImage(tileBaseUrl, imageWidth, imageHeight, tileSize, tilesXCount, tilesYCount, tileFormat):
+	# There are various different tileset_ids of different sizes, so we iterate
+	# through them to try to find the largest available tilesetID.
+	tilesetID = 0
+	for _id in range(0, 20):
+		tileUrl = f"{tileBaseUrl}/{_id}/{0}_{0}.{tileFormat}"
+		response = requests.get(tileUrl)
+		# All of the tiles are served via S3, and we get a 404 response when
+		# the requeset tile is not available. This usually means that we've passed
+		# the largest tileset available, so we can stop looking for larger ones.
+		if response.status_code != 200:
+			break
+		tilesetID = _id
 
-painting_data = json.loads(json.loads(painting_data_match_groups[0]))
-images = painting_data.get('images')
-if not images:
-  raise Exception('Could not find image data for the requested painting.')
+	print('Beginning download...')
+	finalImage = Image.new('RGB', (imageWidth, imageHeight))
+	for i in range(tilesXCount):
+		for j in range(tilesYCount):
+			tileUrl = f"{tileBaseUrl}/{tilesetID}/{i}_{j}.{tileFormat}"
+			print(f'Downloading tile from {tileUrl}')
+			response = requests.get(tileUrl)
 
-for image_num, image_data in enumerate(images):
-  tile_base_url = image_data.get('tile_base_url')
-  if not tile_base_url:
-    raise Exception('Could not find a tile base URL in the image data.')
+			if response.status_code == 200:
+				tileImage = Image.open(BytesIO(response.content))
+				finalImage.paste(tileImage, (i * tileSize, j * tileSize))
+			else:
+				print(f"HTTP-Error for {tileUrl}")
+	
+	return finalImage
 
-  tile_format = image_data.get('tile_format')
-  if not tile_format:
-    raise Exception('Could not find a tile format in the image data.')
+def downloadImages(paintingData):
+	for imageNum, image in enumerate(paintingData["figures"]):
+		tileBaseUrl = image["deepZoom"]["Image"]["Url"].rstrip("/")
+		tileFormat = image["deepZoom"]["Image"]["Format"]
+		imageWidth = image["deepZoom"]["Image"]["Size"]["Width"]
+		imageHeight = image["deepZoom"]["Image"]["Size"]["Height"]
+		tileSize = image["deepZoom"]["Image"]["TileSize"]
+		tilesXCount = int(imageWidth / tileSize) + 1
+		tilesYCount = int(imageHeight / tileSize) + 1
+		slug = paintingData["slug"]
 
-  tile_size_px = image_data.get('tile_size')
-  image_width_px = image_data.get('max_tiled_width')
-  image_height_px = image_data.get('original_height')
+		finalImage = assembleImage(tileBaseUrl, imageWidth, imageHeight, tileSize, tilesXCount, tilesYCount, tileFormat)
+		filename = f"{slug}-{imageNum}.{tileFormat}"
+		finalImage.save(filename)
+		print(f'Downloaded to {filename} at {imageWidth}x{imageHeight}')
 
-  x_count = int(image_width_px / tile_size_px) + 1
-  y_count = int(image_height_px / tile_size_px) + 1
+if __name__ == "__main__":
+	parser = argparse.ArgumentParser()
+	parser.add_argument("url")
+	args = parser.parse_args()
 
-  # This is the template string that we can fill out to download a given tile.
-  # There are various different tileset_ids of different sizes, so we iterate
-  # through them to try to find the largest available tileset_id.
-  tile_url_template = ''.join((tile_base_url,
-                               '/{tileset_id}/{x}_{y}.',
-                               tile_format))
-  tileset_id = 0
-  for _id in xrange(0, 20):
-    tile_url = tile_url_template.format(tileset_id=_id, x=0, y=0)
-    response = requests.get(tile_url)
-    # All of the tiles are served via S3, and we get a 404 response when
-    # the requeset tile is not available. This usually means that we've passed
-    # the largest tileset available, so we can stop looking for larger ones.
-    if response.status_code != 200:
-      break
-
-    tileset_id = _id
-
-  print 'Beginning download...'
-  final_image = Image.new('RGB', (image_width_px, image_height_px))
-  for i in xrange(x_count):
-    for j in xrange(y_count):
-      tile_url = tile_url_template.format(tileset_id=tileset_id, x=i, y=j)
-      print '\rDownloading tile from {}'.format(tile_url)
-      response = requests.get(tile_url)
-      tile_image = Image.open(StringIO(response.content))
-      final_image.paste(tile_image, (i * tile_size_px, j * tile_size_px))
-
-  image_name = painting_data.get('id', 'artsy-output')
-  file_name = image_name + '.' + str(image_num) + '.' + tile_format
-  final_image.save(file_name)
-
-  print 'Downloaded to {} at {}x{}'.format(file_name,
-                                           image_width_px,
-                                           image_height_px)
-
+	paintingData = extractPaintingData(args.url)
+	downloadImages(paintingData)
